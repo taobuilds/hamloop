@@ -175,6 +175,14 @@ export default function LoopApp() {
   // ephemeral UI state
   const [tab, setTab] = useState<Tab>("today");
   const [swipeExit, setSwipeExit] = useState(0);
+  // After a card flies off, the next one is "entering": it must snap to center
+  // (no slide) and fade in from behind the deck rather than sliding in from the
+  // swipe direction.
+  const [entering, setEntering] = useState(false);
+  // Tinder-style drag: dx is horizontal offset in px, active while a finger/
+  // pointer is down. dragRef holds the pointer's start so move/up can measure.
+  const [drag, setDrag] = useState<{ dx: number; active: boolean }>({ dx: 0, active: false });
+  const dragRef = useRef<{ x: number; id: number } | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickText, setQuickText] = useState("");
   const [quickType, setQuickType] = useState<TaskType>("Life");
@@ -316,6 +324,7 @@ export default function LoopApp() {
     setSwipeExit(keep ? 1 : -1);
     setTimeout(() => {
       setSwipeExit(0);
+      setEntering(true);
       setP((s) => ({
         ...s,
         swiped: s.swiped + 1,
@@ -323,7 +332,35 @@ export default function LoopApp() {
           c.id === id ? { ...c, status: keep ? "today" : "skippedToday" } : c
         ),
       }));
+      // Let the next card settle at center (instant), then re-enable the normal
+      // transform transition once it's done fading in.
+      setTimeout(() => setEntering(false), 260);
     }, 290);
+  };
+
+  // Drag gestures for the morning-swipe card. Pointer events cover both touch
+  // and mouse; past SWIPE_THRESHOLD a release commits the same keep/skip the
+  // buttons do, otherwise the card springs back to center.
+  const SWIPE_THRESHOLD = 90;
+  const onCardPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (swipeExit || !deck.length) return;
+    // Let the in-card buttons handle their own taps — don't hijack as a drag.
+    if ((e.target as HTMLElement).closest("button")) return;
+    dragRef.current = { x: e.clientX, id: e.pointerId };
+    setDrag({ dx: 0, active: true });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onCardPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current || dragRef.current.id !== e.pointerId) return;
+    setDrag({ dx: e.clientX - dragRef.current.x, active: true });
+  };
+  const onCardPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current || dragRef.current.id !== e.pointerId) return;
+    const dx = e.clientX - dragRef.current.x;
+    dragRef.current = null;
+    setDrag({ dx: 0, active: false });
+    if (dx > SWIPE_THRESHOLD) swipe(true);
+    else if (dx < -SWIPE_THRESHOLD) swipe(false);
   };
 
   const completeTask = (id: string, fromBuild: boolean) => {
@@ -841,15 +878,47 @@ export default function LoopApp() {
                     <div className="absolute -bottom-3 left-4 right-4 top-4 rounded-[26px] border border-[rgba(255,255,255,0.5)] bg-[rgba(255,255,255,0.32)]" />
                   )}
                   <div
-                    className="glass-card relative rounded-[26px] p-6 shadow-[0_22px_40px_-24px_rgba(42,50,68,0.45)]"
+                    onPointerDown={onCardPointerDown}
+                    onPointerMove={onCardPointerMove}
+                    onPointerUp={onCardPointerUp}
+                    onPointerCancel={onCardPointerUp}
+                    className="glass-card relative cursor-grab touch-pan-y select-none rounded-[26px] p-6 shadow-[0_22px_40px_-24px_rgba(42,50,68,0.45)] active:cursor-grabbing"
                     style={{
                       transform: exiting
                         ? `translateX(${swipeExit * 430}px) rotate(${swipeExit * 7}deg)`
-                        : "none",
+                        : `translateX(${drag.dx}px) rotate(${drag.dx * 0.04}deg)`,
                       opacity: exiting ? 0 : 1,
-                      transition: exiting ? "transform 0.3s ease, opacity 0.3s ease" : "none",
+                      transition: exiting
+                        ? "transform 0.3s ease, opacity 0.3s ease"
+                        : entering
+                        ? // snap to center with no transform slide; just fade in
+                          "opacity 0.25s ease"
+                        : drag.active
+                        ? "none"
+                        : "transform 0.25s cubic-bezier(0.22,1,0.36,1), opacity 0.25s ease",
                     }}
                   >
+                    {/* drag feedback — fade in as the card is pulled past center */}
+                    <div
+                      className="pointer-events-none absolute right-5 top-5 rounded-[10px] border-2 px-2.5 py-1 font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-white"
+                      style={{
+                        background: "var(--accent-bg)",
+                        borderColor: "rgba(255,255,255,0.7)",
+                        opacity: Math.max(0, Math.min(1, drag.dx / SWIPE_THRESHOLD)),
+                        transform: "rotate(8deg)",
+                      }}
+                    >
+                      Keep
+                    </div>
+                    <div
+                      className="pointer-events-none absolute left-5 top-5 rounded-[10px] border-2 border-[rgba(30,33,42,0.25)] bg-[rgba(30,33,42,0.55)] px-2.5 py-1 font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-white"
+                      style={{
+                        opacity: Math.max(0, Math.min(1, -drag.dx / SWIPE_THRESHOLD)),
+                        transform: "rotate(-8deg)",
+                      }}
+                    >
+                      Skip
+                    </div>
                     <div className="flex items-center justify-between">
                       <TypeBadge type={top.type} />
                       <span className="font-mono text-[10.5px] text-[var(--ink3)]">
