@@ -182,7 +182,10 @@ export default function LoopApp() {
   // Tinder-style drag: dx is horizontal offset in px, active while a finger/
   // pointer is down. dragRef holds the pointer's start so move/up can measure.
   const [drag, setDrag] = useState<{ dx: number; active: boolean }>({ dx: 0, active: false });
-  const dragRef = useRef<{ x: number; id: number } | null>(null);
+  // axis: which direction the gesture locked into once it moved enough — "none"
+  // until decided, "x" for a horizontal swipe, "y" once we bail to let the page
+  // scroll. y/x is also where we store the pointer start so move/up can measure.
+  const dragRef = useRef<{ x: number; y: number; id: number; axis: "none" | "x" | "y" } | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickText, setQuickText] = useState("");
   const [quickType, setQuickType] = useState<TaskType>("Life");
@@ -342,23 +345,48 @@ export default function LoopApp() {
   // and mouse; past SWIPE_THRESHOLD a release commits the same keep/skip the
   // buttons do, otherwise the card springs back to center.
   const SWIPE_THRESHOLD = 90;
+  // How far a finger must travel before we decide the gesture is a horizontal
+  // swipe vs. a vertical scroll. Until then the card stays put and the page can
+  // scroll normally, so brushing the card while scrolling never flings it away.
+  const AXIS_LOCK = 10;
   const onCardPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (swipeExit || !deck.length) return;
     // Let the in-card buttons handle their own taps — don't hijack as a drag.
     if ((e.target as HTMLElement).closest("button")) return;
-    dragRef.current = { x: e.clientX, id: e.pointerId };
-    setDrag({ dx: 0, active: true });
-    e.currentTarget.setPointerCapture(e.pointerId);
+    // Record the start but DON'T capture the pointer or move the card yet —
+    // we wait for the move handler to confirm a horizontal intent. That keeps
+    // vertical scrolls (which share the same pointerdown) with the browser.
+    dragRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId, axis: "none" };
   };
   const onCardPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current || dragRef.current.id !== e.pointerId) return;
-    setDrag({ dx: e.clientX - dragRef.current.x, active: true });
+    const d = dragRef.current;
+    if (!d || d.id !== e.pointerId) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (d.axis === "none") {
+      // Not enough movement to tell scroll from swipe yet.
+      if (Math.abs(dx) < AXIS_LOCK && Math.abs(dy) < AXIS_LOCK) return;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        // Vertical wins: this is a scroll. Release the gesture so the browser
+        // scrolls and we never commit a swipe.
+        dragRef.current = null;
+        return;
+      }
+      // Horizontal wins: lock in, capture the pointer, start the Tinder drag.
+      d.axis = "x";
+      e.currentTarget.setPointerCapture(e.pointerId);
+    }
+    setDrag({ dx, active: true });
   };
   const onCardPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current || dragRef.current.id !== e.pointerId) return;
-    const dx = e.clientX - dragRef.current.x;
+    const d = dragRef.current;
+    if (!d || d.id !== e.pointerId) return;
+    const dx = e.clientX - d.x;
+    const lockedHorizontal = d.axis === "x";
     dragRef.current = null;
     setDrag({ dx: 0, active: false });
+    // Only commit if the gesture actually locked into a horizontal swipe.
+    if (!lockedHorizontal) return;
     if (dx > SWIPE_THRESHOLD) swipe(true);
     else if (dx < -SWIPE_THRESHOLD) swipe(false);
   };
